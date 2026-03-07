@@ -543,10 +543,10 @@ async def spend_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     # If full args provided: /spend Cat 100 [desc] — skip to photo step
-    if len(context.args) >= 2:
+    if len(context.args or []) >= 2:
         cat_name = context.args[0]
         raw_amount = context.args[1]
-        description = " ".join(context.args[2:]) if len(context.args) > 2 else None
+        description = " ".join(context.args[2:]) if len(context.args or []) > 2 else None
         try:
             amount = float(raw_amount.replace(",", "."))
         except ValueError:
