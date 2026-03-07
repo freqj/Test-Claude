@@ -2,7 +2,7 @@ import logging
 import os
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from telegram.ext import ApplicationBuilder, CommandHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
 
 import database as db
 from handlers import (
@@ -63,6 +63,8 @@ def main():
     app.add_handler(CommandHandler("myid", cmd_myid))
     app.add_handler(CommandHandler("budget", cmd_budget))
     app.add_handler(CommandHandler("accept", cmd_accept))
+    # Quick-access keyboard buttons
+    app.add_handler(MessageHandler(filters.Text(["📊 Budget"]), cmd_budget))
 
     # Conversation handlers (step-by-step)
     app.add_handler(build_link_handler())

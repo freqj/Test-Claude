@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ContextTypes,
     ConversationHandler,
@@ -47,6 +47,13 @@ def _progress_bar(spent: float, budget: float, width: int = 10) -> str:
 
 def _skip_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Пропустить", callback_data="skip")]])
+
+
+def _group_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton("💸 Spend"), KeyboardButton("📊 Budget")]],
+        resize_keyboard=True,
+    )
 
 
 async def _ensure_group(user_id: int) -> int | None:
@@ -129,7 +136,9 @@ async def _cat_list_keyboard(group_id: int) -> InlineKeyboardMarkup | None:
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    await update.message.reply_text("❌ Отменено.")
+    me = await db.get_user(update.effective_user.id)
+    kb = _group_keyboard() if (me and me.get("group_id")) else None
+    await update.message.reply_text("❌ Отменено.", reply_markup=kb)
     return ConversationHandler.END
 
 
@@ -137,7 +146,7 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    await db.get_or_create_user(user.id, user.username)
+    me = await db.get_or_create_user(user.id, user.username)
     text = (
         "👋 <b>Бот учёта бюджета</b>\n\n"
         "<b>Команды:</b>\n"
@@ -154,7 +163,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Все команды работают пошагово — просто введите команду без аргументов.\n"
         "Счёт сбрасывается <b>1‑го числа каждого месяца</b>."
     )
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    kb = _group_keyboard() if me.get("group_id") else None
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
 
 
 # ── /myid ────────────────────────────────────────────────────────────────────
@@ -237,12 +247,14 @@ async def cmd_accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     from_user = await db.get_user(from_id)
     await update.message.reply_text(
-        f"✅ Вы привязаны к {_user_display(from_id, from_user.get('username'))}! Теперь у вас общий бюджет."
+        f"✅ Вы привязаны к {_user_display(from_id, from_user.get('username'))}! Теперь у вас общий бюджет.",
+        reply_markup=_group_keyboard(),
     )
     try:
         await context.bot.send_message(
             chat_id=from_id,
             text=f"✅ {_user_display(user.id, user.username)} принял(а) запрос. Теперь у вас общий бюджет!",
+            reply_markup=_group_keyboard(),
         )
     except Exception:
         pass
@@ -306,9 +318,12 @@ async def _do_link(update: Update, context: ContextTypes.DEFAULT_TYPE, raw_id: s
     except Exception:
         pass
 
+    me = await db.get_user(user.id)
+    kb = _group_keyboard() if (me and me.get("group_id")) else None
     await update.message.reply_text(
         f"✅ Запрос отправлен пользователю <code>{target_id}</code>. Ожидайте подтверждения.",
         parse_mode=ParseMode.HTML,
+        reply_markup=kb,
     )
     return ConversationHandler.END
 
@@ -382,11 +397,13 @@ async def _do_addcat(update: Update, context: ContextTypes.DEFAULT_TYPE, name: s
         await update.message.reply_text(
             f"📝 Бюджет категории <b>{name}</b> обновлён: <b>{budget:,.2f}</b>",
             parse_mode=ParseMode.HTML,
+            reply_markup=_group_keyboard(),
         )
     else:
         await update.message.reply_text(
             f"✅ Категория <b>{name}</b> создана с бюджетом <b>{budget:,.2f}</b>",
             parse_mode=ParseMode.HTML,
+            reply_markup=_group_keyboard(),
         )
         await _notify_group(
             context, group_id, user.id,
@@ -486,6 +503,7 @@ async def _do_setbudget(update: Update, context: ContextTypes.DEFAULT_TYPE, name
     await update.message.reply_text(
         f"✅ Бюджет <b>{name}</b> изменён на <b>{budget:,.2f}</b>",
         parse_mode=ParseMode.HTML,
+        reply_markup=_group_keyboard(),
     )
     await _notify_group(
         context, group_id, user.id,
@@ -680,9 +698,9 @@ async def _finalize_spend(
     # Send to self
     effective_message = update.message or update.callback_query.message
     if photo_file_id:
-        await effective_message.reply_photo(photo=photo_file_id, caption=msg, parse_mode=ParseMode.HTML)
+        await effective_message.reply_photo(photo=photo_file_id, caption=msg, parse_mode=ParseMode.HTML, reply_markup=_group_keyboard())
     else:
-        await effective_message.reply_text(msg, parse_mode=ParseMode.HTML)
+        await effective_message.reply_text(msg, parse_mode=ParseMode.HTML, reply_markup=_group_keyboard())
 
     # Notify others
     notify_msg = await _build_expense_message(
@@ -695,7 +713,10 @@ async def _finalize_spend(
 
 def build_spend_handler() -> ConversationHandler:
     return ConversationHandler(
-        entry_points=[CommandHandler("spend", spend_entry)],
+        entry_points=[
+            CommandHandler("spend", spend_entry),
+            MessageHandler(filters.Text(["💸 Spend"]), spend_entry),
+        ],
         states={
             SPEND_CAT: [
                 CallbackQueryHandler(spend_receive_cat_cb, pattern=r"^cat:"),
@@ -771,7 +792,7 @@ async def _do_history(update: Update, context: ContextTypes.DEFAULT_TYPE, cat_na
 
     history = await db.get_expense_history(cat["id"])
     if not history:
-        await effective_message.reply_text(f"Трат по «{cat['name']}» пока нет.")
+        await effective_message.reply_text(f"Трат по «{cat['name']}» пока нет.", reply_markup=_group_keyboard())
         return ConversationHandler.END
 
     lines = [f"🗒 <b>История: {cat['name']}</b>\n"]
@@ -782,7 +803,7 @@ async def _do_history(update: Update, context: ContextTypes.DEFAULT_TYPE, cat_na
         photo_icon = " 📷" if exp.get("photo_file_id") else ""
         lines.append(f"• {dt} | {who} | <b>{exp['amount']:,.2f}</b>{desc}{photo_icon}")
 
-    await effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+    await effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML, reply_markup=_group_keyboard())
     return ConversationHandler.END
 
 
@@ -858,7 +879,7 @@ async def delcat_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = context.user_data.pop("delcat_name", "")
 
     if choice == "no":
-        await update.callback_query.message.reply_text("Отменено.")
+        await update.callback_query.message.reply_text("Отменено.", reply_markup=_group_keyboard())
         return ConversationHandler.END
 
     user = update.effective_user
@@ -867,12 +888,13 @@ async def delcat_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ok = await db.delete_category(group_id, name) if group_id else False
 
     if not ok:
-        await update.callback_query.message.reply_text(f"❗ Категория «{name}» не найдена.")
+        await update.callback_query.message.reply_text(f"❗ Категория «{name}» не найдена.", reply_markup=_group_keyboard())
         return ConversationHandler.END
 
     await update.callback_query.message.reply_text(
         f"🗑 Категория <b>{name}</b> и все её траты удалены.",
         parse_mode=ParseMode.HTML,
+        reply_markup=_group_keyboard(),
     )
     await _notify_group(
         context, group_id, user.id,
