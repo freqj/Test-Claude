@@ -85,6 +85,18 @@ def main():
     async def on_startup(application):
         await db.init_db()
         scheduler.start()
+        await application.bot.set_my_commands([
+            ("start", "Начало работы"),
+            ("myid", "Узнать свой Telegram ID"),
+            ("link", "Пригласить партнёра"),
+            ("accept", "Принять приглашение"),
+            ("addcat", "Добавить категорию"),
+            ("setbudget", "Установить бюджет"),
+            ("spend", "Записать трату"),
+            ("budget", "Посмотреть бюджет"),
+            ("history", "История трат"),
+            ("delcat", "Удалить категорию"),
+        ])
         logger.info("Bot started. DB initialised.")
 
     async def on_shutdown(application):
