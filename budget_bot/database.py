@@ -2,7 +2,7 @@ import aiosqlite
 import os
 from datetime import datetime
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "budget.db")
+DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "budget.db"))
 
 
 async def init_db():
@@ -35,6 +35,7 @@ async def init_db():
                 user_id INTEGER NOT NULL,
                 amount REAL NOT NULL,
                 description TEXT,
+                photo_file_id TEXT,
                 created_at TEXT DEFAULT (datetime('now')),
                 FOREIGN KEY (category_id) REFERENCES categories(id),
                 FOREIGN KEY (user_id) REFERENCES users(id)
@@ -48,6 +49,12 @@ async def init_db():
             );
         """)
         await db.commit()
+        # Migration: add photo_file_id if upgrading from older schema
+        try:
+            await db.execute("ALTER TABLE expenses ADD COLUMN photo_file_id TEXT")
+            await db.commit()
+        except Exception:
+            pass
 
 
 async def get_or_create_user(telegram_id: int, username: str = None) -> dict:
@@ -217,13 +224,17 @@ async def get_category_by_name(group_id: int, name: str) -> dict | None:
 
 
 async def add_expense(
-    category_id: int, user_id: int, amount: float, description: str = None
+    category_id: int,
+    user_id: int,
+    amount: float,
+    description: str = None,
+    photo_file_id: str = None,
 ) -> dict:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            "INSERT INTO expenses (category_id, user_id, amount, description) VALUES (?, ?, ?, ?)",
-            (category_id, user_id, amount, description),
+            "INSERT INTO expenses (category_id, user_id, amount, description, photo_file_id) VALUES (?, ?, ?, ?, ?)",
+            (category_id, user_id, amount, description, photo_file_id),
         )
         await db.commit()
         cur2 = await db.execute(
