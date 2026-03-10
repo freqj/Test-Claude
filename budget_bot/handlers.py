@@ -27,7 +27,9 @@ import database as db
     DELCAT_NAME,
     DELCAT_CONFIRM,
     HISTORY_CAT,
-) = range(12)
+    ADDPRIVCAT_NAME,
+    ADDPRIVCAT_BUDGET,
+) = range(14)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -124,11 +126,19 @@ async def _build_expense_message(
     return msg
 
 
-async def _cat_list_keyboard(group_id: int) -> InlineKeyboardMarkup | None:
-    cats = await db.get_categories(group_id)
+async def _cat_list_keyboard(group_id: int, user_id: int = None) -> InlineKeyboardMarkup | None:
+    if user_id is not None:
+        cats = await db.get_user_categories(group_id, user_id)
+    else:
+        cats = await db.get_categories(group_id)
     if not cats:
         return None
-    buttons = [[InlineKeyboardButton(c["name"], callback_data=f"cat:{c['name']}")] for c in cats]
+    buttons = []
+    for c in cats:
+        if c.get("owner_user_id", 0) != 0:
+            buttons.append([InlineKeyboardButton(f"🔒 {c['name']}", callback_data=f"privcat:{c['name']}")])
+        else:
+            buttons.append([InlineKeyboardButton(c["name"], callback_data=f"cat:{c['name']}")])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -151,6 +161,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 <b>Бот учёта бюджета</b>\n\n"
         "<b>Команды:</b>\n"
         "  /addcat — создать категорию с бюджетом\n"
+        "  /addprivcat — создать приватную категорию (только для вас)\n"
         "  /setbudget — изменить бюджет категории\n"
         "  /spend — добавить трату (с фото и описанием)\n"
         "  /budget — текущий бюджет по всем категориям\n"
@@ -186,8 +197,13 @@ async def cmd_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("У вас нет категорий. Создайте через /addcat.")
         return
 
-    cats = await db.get_categories(group_id)
-    if not cats:
+    shared_cats = await db.get_categories(group_id)
+    priv_cats = [
+        c for c in await db.get_user_categories(group_id, me["id"])
+        if c.get("owner_user_id", 0) != 0
+    ]
+
+    if not shared_cats and not priv_cats:
         await update.message.reply_text("Категорий пока нет. Добавьте через /addcat.")
         return
 
@@ -195,7 +211,7 @@ async def cmd_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [f"📊 <b>Бюджет за {now.strftime('%B %Y')}</b>\n"]
     total_budget = total_spent = 0.0
 
-    for cat in cats:
+    for cat in shared_cats:
         spent = await db.get_monthly_spent(cat["id"])
         budget = cat["monthly_budget"]
         total_budget += budget
@@ -214,6 +230,18 @@ async def cmd_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     members = await db.get_group_members(group_id)
     member_names = ", ".join(_user_display(m["telegram_id"], m.get("username")) for m in members)
     lines.append(f"\n👥 Участники: {member_names}")
+
+    if priv_cats:
+        lines.append("\n🔒 <b>Личные категории:</b>")
+        for cat in priv_cats:
+            spent = await db.get_monthly_spent(cat["id"])
+            budget = cat["monthly_budget"]
+            icon = "🔴" if spent > budget else "🟢"
+            lines.append(
+                f"{icon} <b>{cat['name']}</b>\n"
+                f"   {spent:,.2f} / {budget:,.2f}\n"
+                f"   {_progress_bar(spent, budget)}"
+            )
 
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
@@ -425,6 +453,88 @@ def build_addcat_handler() -> ConversationHandler:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# ConversationHandler: /addprivcat
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def addprivcat_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    await db.get_or_create_user(user.id, user.username)
+
+    if len(context.args or []) >= 2:
+        return await _do_addprivcat(update, context, context.args[0], context.args[1])
+
+    await update.message.reply_text(
+        "🔒 Введите <b>название</b> приватной категории:\n\n/cancel — отмена",
+        parse_mode=ParseMode.HTML,
+    )
+    return ADDPRIVCAT_NAME
+
+
+async def addprivcat_receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = update.message.text.strip()
+    if not name:
+        await update.message.reply_text("❗ Название не может быть пустым. Попробуйте снова:")
+        return ADDPRIVCAT_NAME
+    context.user_data["addprivcat_name"] = name
+    await update.message.reply_text(
+        f"💰 Введите <b>месячный бюджет</b> для приватной категории «{name}»:\n\n/cancel — отмена",
+        parse_mode=ParseMode.HTML,
+    )
+    return ADDPRIVCAT_BUDGET
+
+
+async def addprivcat_receive_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await _do_addprivcat(
+        update, context,
+        context.user_data.pop("addprivcat_name", ""),
+        update.message.text.strip(),
+    )
+
+
+async def _do_addprivcat(update: Update, context: ContextTypes.DEFAULT_TYPE, name: str, raw_budget: str):
+    try:
+        budget = float(raw_budget.replace(",", "."))
+    except ValueError:
+        await update.message.reply_text("❗ Бюджет должен быть числом. Попробуйте снова:")
+        return ADDPRIVCAT_BUDGET
+    if budget <= 0:
+        await update.message.reply_text("❗ Бюджет должен быть больше нуля. Попробуйте снова:")
+        return ADDPRIVCAT_BUDGET
+
+    user = update.effective_user
+    group_id = await _ensure_group(user.id)
+    me = await db.get_user(user.id)
+
+    cat = await db.add_private_category(me["id"], group_id, name, budget)
+    if cat is None:
+        await db.update_private_category_budget(me["id"], group_id, name, budget)
+        await update.message.reply_text(
+            f"📝 Бюджет приватной категории 🔒 <b>{name}</b> обновлён: <b>{budget:,.2f}</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_group_keyboard(),
+        )
+    else:
+        await update.message.reply_text(
+            f"✅ Приватная категория 🔒 <b>{name}</b> создана с бюджетом <b>{budget:,.2f}</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_group_keyboard(),
+        )
+    return ConversationHandler.END
+
+
+def build_addprivcat_handler() -> ConversationHandler:
+    return ConversationHandler(
+        entry_points=[CommandHandler("addprivcat", addprivcat_entry)],
+        states={
+            ADDPRIVCAT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, addprivcat_receive_name)],
+            ADDPRIVCAT_BUDGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, addprivcat_receive_budget)],
+        },
+        fallbacks=[CommandHandler("cancel", cmd_cancel)],
+        per_user=True,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # ConversationHandler: /setbudget
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -557,8 +667,12 @@ async def spend_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ConversationHandler.END
 
         cat = await db.get_category_by_name(group_id, cat_name)
+        is_private = False
         if cat is None:
-            cats = await db.get_categories(group_id)
+            cat = await db.get_private_category_by_name(me["id"], group_id, cat_name)
+            is_private = True
+        if cat is None:
+            cats = await db.get_user_categories(group_id, me["id"])
             names = ", ".join(f"<b>{c['name']}</b>" for c in cats) or "нет категорий"
             await update.message.reply_text(
                 f"❗ Категория «{cat_name}» не найдена.\nДоступные: {names}",
@@ -567,7 +681,8 @@ async def spend_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ConversationHandler.END
 
         context.user_data["spend"] = {
-            "cat": cat, "amount": amount, "description": description, "group_id": group_id
+            "cat": cat, "amount": amount, "description": description,
+            "group_id": group_id, "is_private": is_private,
         }
         await update.message.reply_text(
             "📷 Прикрепите фото чека или нажмите «Пропустить»:",
@@ -576,7 +691,7 @@ async def spend_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return SPEND_PHOTO
 
     # Step-by-step: show category list
-    kb = await _cat_list_keyboard(group_id)
+    kb = await _cat_list_keyboard(group_id, me["id"])
     await update.message.reply_text(
         "💸 Выберите категорию или введите название:\n\n/cancel — отмена",
         reply_markup=kb,
@@ -586,16 +701,21 @@ async def spend_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def spend_receive_cat_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    name = update.callback_query.data.split(":", 1)[1]
+    prefix, name = update.callback_query.data.split(":", 1)
+    is_private = prefix == "privcat"
     user = update.effective_user
     me = await db.get_user(user.id)
     group_id = me.get("group_id")
-    cat = await db.get_category_by_name(group_id, name)
+    if is_private:
+        cat = await db.get_private_category_by_name(me["id"], group_id, name)
+    else:
+        cat = await db.get_category_by_name(group_id, name)
     if cat is None:
         await update.callback_query.message.reply_text("❗ Категория не найдена.")
         return ConversationHandler.END
     context.user_data.setdefault("spend", {})["cat"] = cat
     context.user_data["spend"]["group_id"] = group_id
+    context.user_data["spend"]["is_private"] = is_private
     await update.callback_query.message.reply_text(
         f"💰 Введите сумму для <b>{cat['name']}</b>:\n\n/cancel — отмена",
         parse_mode=ParseMode.HTML,
@@ -609,8 +729,12 @@ async def spend_receive_cat_text(update: Update, context: ContextTypes.DEFAULT_T
     me = await db.get_user(user.id)
     group_id = me.get("group_id")
     cat = await db.get_category_by_name(group_id, name)
+    is_private = False
     if cat is None:
-        cats = await db.get_categories(group_id)
+        cat = await db.get_private_category_by_name(me["id"], group_id, name)
+        is_private = True
+    if cat is None:
+        cats = await db.get_user_categories(group_id, me["id"])
         names = ", ".join(c["name"] for c in cats) or "нет категорий"
         await update.message.reply_text(
             f"❗ Категория «{name}» не найдена.\nДоступные: {names}\n\nПопробуйте снова:"
@@ -618,6 +742,7 @@ async def spend_receive_cat_text(update: Update, context: ContextTypes.DEFAULT_T
         return SPEND_CAT
     context.user_data.setdefault("spend", {})["cat"] = cat
     context.user_data["spend"]["group_id"] = group_id
+    context.user_data["spend"]["is_private"] = is_private
     await update.message.reply_text(
         f"💰 Введите сумму для <b>{cat['name']}</b>:\n\n/cancel — отмена",
         parse_mode=ParseMode.HTML,
@@ -686,6 +811,7 @@ async def _finalize_spend(
     amount = data["amount"]
     description = data.get("description")
     group_id = data["group_id"]
+    is_private = data.get("is_private", False)
 
     me = await db.get_user(user.id)
     await db.add_expense(cat["id"], me["id"], amount, description, photo_file_id)
@@ -702,13 +828,14 @@ async def _finalize_spend(
     else:
         await effective_message.reply_text(msg, parse_mode=ParseMode.HTML, reply_markup=_group_keyboard())
 
-    # Notify others
-    notify_msg = await _build_expense_message(
-        who=_user_display(user.id, user.username),
-        cat_name=cat["name"], amount=amount,
-        spent=spent, budget=cat["monthly_budget"], description=description,
-    )
-    await _notify_group(context, group_id, user.id, notify_msg, photo_file_id=photo_file_id)
+    # Notify others (skip for private categories)
+    if not is_private:
+        notify_msg = await _build_expense_message(
+            who=_user_display(user.id, user.username),
+            cat_name=cat["name"], amount=amount,
+            spent=spent, budget=cat["monthly_budget"], description=description,
+        )
+        await _notify_group(context, group_id, user.id, notify_msg, photo_file_id=photo_file_id)
 
 
 def build_spend_handler() -> ConversationHandler:
@@ -719,7 +846,7 @@ def build_spend_handler() -> ConversationHandler:
         ],
         states={
             SPEND_CAT: [
-                CallbackQueryHandler(spend_receive_cat_cb, pattern=r"^cat:"),
+                CallbackQueryHandler(spend_receive_cat_cb, pattern=r"^(cat|privcat):"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, spend_receive_cat_text),
             ],
             SPEND_AMOUNT: [
@@ -754,7 +881,7 @@ async def history_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args:
         return await _do_history(update, context, context.args[0])
 
-    kb = await _cat_list_keyboard(group_id)
+    kb = await _cat_list_keyboard(group_id, me["id"])
     await update.message.reply_text(
         "🗒 Выберите категорию или введите название:\n\n/cancel — отмена",
         reply_markup=kb,
@@ -764,7 +891,8 @@ async def history_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def history_receive_cat_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    name = update.callback_query.data.split(":", 1)[1]
+    prefix, name = update.callback_query.data.split(":", 1)
+    context.user_data["history_privcat"] = (prefix == "privcat")
     return await _do_history(update, context, name)
 
 
@@ -784,7 +912,10 @@ async def _do_history(update: Update, context: ContextTypes.DEFAULT_TYPE, cat_na
             await update.message.reply_text(msg)
         return ConversationHandler.END
 
+    # Check shared first, then private
     cat = await db.get_category_by_name(group_id, cat_name)
+    if cat is None or context.user_data.pop("history_privcat", False):
+        cat = await db.get_private_category_by_name(me["id"], group_id, cat_name) or cat
     effective_message = update.message or update.callback_query.message
     if cat is None:
         await effective_message.reply_text(f"❗ Категория «{cat_name}» не найдена.")
@@ -812,7 +943,7 @@ def build_history_handler() -> ConversationHandler:
         entry_points=[CommandHandler("history", history_entry)],
         states={
             HISTORY_CAT: [
-                CallbackQueryHandler(history_receive_cat_cb, pattern=r"^cat:"),
+                CallbackQueryHandler(history_receive_cat_cb, pattern=r"^(cat|privcat):"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, history_receive_cat_text),
             ],
         },

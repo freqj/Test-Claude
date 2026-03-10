@@ -13,6 +13,7 @@ from handlers import (
     cmd_cancel,
     build_link_handler,
     build_addcat_handler,
+    build_addprivcat_handler,
     build_setbudget_handler,
     build_spend_handler,
     build_history_handler,
@@ -69,6 +70,7 @@ def main():
     # Conversation handlers (step-by-step)
     app.add_handler(build_link_handler())
     app.add_handler(build_addcat_handler())
+    app.add_handler(build_addprivcat_handler())
     app.add_handler(build_setbudget_handler())
     app.add_handler(build_spend_handler())
     app.add_handler(build_history_handler())
@@ -87,6 +89,7 @@ def main():
             ("link", "Пригласить партнёра"),
             ("accept", "Принять приглашение"),
             ("addcat", "Добавить категорию"),
+            ("addprivcat", "Добавить приватную категорию"),
             ("setbudget", "Установить бюджет"),
             ("spend", "Записать трату"),
             ("budget", "Посмотреть бюджет"),
