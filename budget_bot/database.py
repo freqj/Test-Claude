@@ -55,6 +55,30 @@ async def init_db():
             await db.commit()
         except Exception:
             pass
+        # Migration: add owner_user_id to categories for private category support
+        try:
+            cursor = await db.execute("PRAGMA table_info(categories)")
+            cols = [row[1] for row in await cursor.fetchall()]
+            if "owner_user_id" not in cols:
+                await db.executescript("""
+                    PRAGMA foreign_keys = OFF;
+                    CREATE TABLE categories_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        group_id INTEGER NOT NULL,
+                        name TEXT NOT NULL,
+                        monthly_budget REAL NOT NULL,
+                        owner_user_id INTEGER NOT NULL DEFAULT 0,
+                        UNIQUE(group_id, owner_user_id, name),
+                        FOREIGN KEY (group_id) REFERENCES groups(id)
+                    );
+                    INSERT INTO categories_new (id, group_id, name, monthly_budget, owner_user_id)
+                        SELECT id, group_id, name, monthly_budget, 0 FROM categories;
+                    DROP TABLE categories;
+                    ALTER TABLE categories_new RENAME TO categories;
+                    PRAGMA foreign_keys = ON;
+                """)
+        except Exception:
+            pass
 
 
 async def get_or_create_user(telegram_id: int, username: str = None) -> dict:
@@ -216,11 +240,78 @@ async def get_category_by_name(group_id: int, name: str) -> dict | None:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT * FROM categories WHERE group_id = ? AND LOWER(name) = LOWER(?)",
+            "SELECT * FROM categories WHERE group_id = ? AND owner_user_id = 0 AND LOWER(name) = LOWER(?)",
             (group_id, name),
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
+
+
+async def get_user_categories(group_id: int, user_id: int) -> list[dict]:
+    """Returns shared categories + private categories owned by user_id."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """SELECT * FROM categories
+               WHERE group_id = ? AND (owner_user_id = 0 OR owner_user_id = ?)
+               ORDER BY owner_user_id, name""",
+            (group_id, user_id),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def add_private_category(owner_user_id: int, group_id: int, name: str, budget: float) -> dict | None:
+    """Returns None if a private category with this name already exists for this user."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        try:
+            cur = await db.execute(
+                "INSERT INTO categories (group_id, name, monthly_budget, owner_user_id) VALUES (?, ?, ?, ?)",
+                (group_id, name, budget, owner_user_id),
+            )
+            await db.commit()
+            cur2 = await db.execute("SELECT * FROM categories WHERE id = ?", (cur.lastrowid,))
+            return dict(await cur2.fetchone())
+        except aiosqlite.IntegrityError:
+            return None
+
+
+async def get_private_category_by_name(owner_user_id: int, group_id: int, name: str) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM categories WHERE group_id = ? AND owner_user_id = ? AND LOWER(name) = LOWER(?)",
+            (group_id, owner_user_id, name),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def update_private_category_budget(owner_user_id: int, group_id: int, name: str, budget: float) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "UPDATE categories SET monthly_budget = ? WHERE group_id = ? AND owner_user_id = ? AND LOWER(name) = LOWER(?)",
+            (budget, group_id, owner_user_id, name),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def delete_private_category(owner_user_id: int, group_id: int, name: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur_cat = await db.execute(
+            "SELECT id FROM categories WHERE group_id = ? AND owner_user_id = ? AND LOWER(name) = LOWER(?)",
+            (group_id, owner_user_id, name),
+        )
+        cat = await cur_cat.fetchone()
+        if not cat:
+            return False
+        await db.execute("DELETE FROM expenses WHERE category_id = ?", (cat["id"],))
+        await db.execute("DELETE FROM categories WHERE id = ?", (cat["id"],))
+        await db.commit()
+        return True
 
 
 async def add_expense(
