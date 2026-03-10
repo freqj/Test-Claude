@@ -16,7 +16,7 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 56777
           script: |
-            cd /home/tgbot/budget_bot
+            cd /home/tgbot/Test-Claude/budget_bot
             git pull origin main
             sudo systemctl restart tg-bot
             echo "✅ Bot restarted successfully"
