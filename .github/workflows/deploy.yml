@@ -1,4 +1,3 @@
-# .github/workflows/deploy.yml
 name: Deploy Bot
 
 on:
@@ -16,7 +15,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            cd /home/budget_bot/my-bot
+            cd /home/tgbot/budget_bot
             git pull origin main
-            systemctl restart tg-bot
+            sudo systemctl restart tg-bot
             echo "✅ Bot restarted successfully"
