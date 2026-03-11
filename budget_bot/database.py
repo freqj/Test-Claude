@@ -230,7 +230,7 @@ async def get_categories(group_id: int) -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT * FROM categories WHERE group_id = ? ORDER BY name", (group_id,)
+            "SELECT * FROM categories WHERE group_id = ? AND owner_user_id = 0 ORDER BY name", (group_id,)
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
@@ -370,7 +370,7 @@ async def delete_category(group_id: int, name: str) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur_cat = await db.execute(
-            "SELECT id FROM categories WHERE group_id = ? AND LOWER(name) = LOWER(?)",
+            "SELECT id FROM categories WHERE group_id = ? AND owner_user_id = 0 AND LOWER(name) = LOWER(?)",
             (group_id, name),
         )
         cat = await cur_cat.fetchone()
