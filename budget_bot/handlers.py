@@ -550,7 +550,7 @@ async def setbudget_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("У вас нет категорий. Создайте через /addcat.")
         return ConversationHandler.END
 
-    kb = await _cat_list_keyboard(group_id)
+    kb = await _cat_list_keyboard(group_id, me["id"])
     if kb is None:
         await update.message.reply_text("У вас нет категорий. Создайте через /addcat.")
         return ConversationHandler.END
@@ -968,7 +968,7 @@ async def delcat_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["delcat_name"] = context.args[0]
         return await _delcat_ask_confirm(update, context)
 
-    kb = await _cat_list_keyboard(group_id)
+    kb = await _cat_list_keyboard(group_id, me["id"])
     await update.message.reply_text(
         "🗑 Выберите категорию для удаления или введите название:\n\n/cancel — отмена",
         reply_markup=kb,
@@ -978,7 +978,9 @@ async def delcat_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def delcat_receive_cat_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    context.user_data["delcat_name"] = update.callback_query.data.split(":", 1)[1]
+    prefix, name = update.callback_query.data.split(":", 1)
+    context.user_data["delcat_name"] = name
+    context.user_data["delcat_is_private"] = (prefix == "privcat")
     return await _delcat_ask_confirm(update, context)
 
 
@@ -1016,7 +1018,14 @@ async def delcat_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     me = await db.get_user(user.id)
     group_id = me.get("group_id") if me else None
-    ok = await db.delete_category(group_id, name) if group_id else False
+    is_private = context.user_data.pop("delcat_is_private", False)
+    if group_id:
+        if is_private:
+            ok = await db.delete_private_category(me["id"], group_id, name)
+        else:
+            ok = await db.delete_category(group_id, name)
+    else:
+        ok = False
 
     if not ok:
         await update.callback_query.message.reply_text(f"❗ Категория «{name}» не найдена.", reply_markup=_group_keyboard())
