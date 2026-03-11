@@ -1039,7 +1039,7 @@ def build_delcat_handler() -> ConversationHandler:
         entry_points=[CommandHandler("delcat", delcat_entry)],
         states={
             DELCAT_NAME: [
-                CallbackQueryHandler(delcat_receive_cat_cb, pattern=r"^cat:"),
+                CallbackQueryHandler(delcat_receive_cat_cb, pattern=r"^(cat|privcat):"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, delcat_receive_cat_text),
             ],
             DELCAT_CONFIRM: [
