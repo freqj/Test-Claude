@@ -350,6 +350,23 @@ async def get_monthly_spent(category_id: int) -> float:
         return row[0]
 
 
+async def get_monthly_spent_by_user(category_id: int, user_id: int) -> float:
+    """Sum of expenses for the current calendar month by a specific internal user_id."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        now = datetime.now()
+        month_start = f"{now.year}-{now.month:02d}-01"
+        cursor = await db.execute(
+            """SELECT COALESCE(SUM(amount), 0) as total
+               FROM expenses
+               WHERE category_id = ?
+                 AND user_id = ?
+                 AND created_at >= ?""",
+            (category_id, user_id, month_start),
+        )
+        row = await cursor.fetchone()
+        return row[0]
+
+
 async def get_expense_history(category_id: int, limit: int = 10) -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row

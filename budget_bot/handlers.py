@@ -213,13 +213,15 @@ async def cmd_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for cat in shared_cats:
         spent = await db.get_monthly_spent(cat["id"])
+        my_spent = await db.get_monthly_spent_by_user(cat["id"], me["id"])
         budget = cat["monthly_budget"]
         total_budget += budget
         total_spent += spent
         icon = "🔴" if spent > budget else "🟢"
+        my_part = f" (вы: {my_spent:,.2f})" if my_spent > 0 else ""
         lines.append(
             f"{icon} <b>{cat['name']}</b>\n"
-            f"   {spent:,.2f} / {budget:,.2f}\n"
+            f"   {spent:,.2f}{my_part} / {budget:,.2f}\n"
             f"   {_progress_bar(spent, budget)}"
         )
 
