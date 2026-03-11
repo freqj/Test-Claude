@@ -219,7 +219,7 @@ async def add_category(group_id: int, name: str, budget: float) -> dict | None:
 async def update_category_budget(group_id: int, name: str, budget: float) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
-            "UPDATE categories SET monthly_budget = ? WHERE group_id = ? AND name = ?",
+            "UPDATE categories SET monthly_budget = ? WHERE group_id = ? AND owner_user_id = 0 AND name = ?",
             (budget, group_id, name),
         )
         await db.commit()

@@ -564,8 +564,9 @@ async def setbudget_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def setbudget_receive_cat_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    name = update.callback_query.data.split(":", 1)[1]
+    prefix, name = update.callback_query.data.split(":", 1)
     context.user_data["setbudget_cat"] = name
+    context.user_data["setbudget_is_private"] = (prefix == "privcat")
     await update.callback_query.message.reply_text(
         f"💰 Введите новый бюджет для «{name}»:\n\n/cancel — отмена"
     )
@@ -585,10 +586,11 @@ async def setbudget_receive_amount(update: Update, context: ContextTypes.DEFAULT
         update, context,
         context.user_data.pop("setbudget_cat", ""),
         update.message.text.strip(),
+        is_private=context.user_data.pop("setbudget_is_private", False),
     )
 
 
-async def _do_setbudget(update: Update, context: ContextTypes.DEFAULT_TYPE, name: str, raw_budget: str):
+async def _do_setbudget(update: Update, context: ContextTypes.DEFAULT_TYPE, name: str, raw_budget: str, is_private: bool = False):
     try:
         budget = float(raw_budget.replace(",", "."))
     except ValueError:
@@ -605,7 +607,10 @@ async def _do_setbudget(update: Update, context: ContextTypes.DEFAULT_TYPE, name
         await update.message.reply_text("У вас нет категорий.")
         return ConversationHandler.END
 
-    ok = await db.update_category_budget(group_id, name, budget)
+    if is_private:
+        ok = await db.update_private_category_budget(me["id"], group_id, name, budget)
+    else:
+        ok = await db.update_category_budget(group_id, name, budget)
     if not ok:
         await update.message.reply_text(f"❗ Категория «{name}» не найдена.")
         return ConversationHandler.END
@@ -627,7 +632,7 @@ def build_setbudget_handler() -> ConversationHandler:
         entry_points=[CommandHandler("setbudget", setbudget_entry)],
         states={
             SETBUDGET_CAT: [
-                CallbackQueryHandler(setbudget_receive_cat_cb, pattern=r"^cat:"),
+                CallbackQueryHandler(setbudget_receive_cat_cb, pattern=r"^(cat|privcat):"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, setbudget_receive_cat_text),
             ],
             SETBUDGET_AMOUNT: [
