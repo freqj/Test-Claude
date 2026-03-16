@@ -82,7 +82,6 @@ def main():
     app.add_handler(CommandHandler("myid", cmd_myid))
     app.add_handler(CommandHandler("budget", cmd_budget))
     app.add_handler(CommandHandler("accept", cmd_accept))
-    app.add_handler(CommandHandler("cancel", cmd_cancel))
     # Quick-access keyboard buttons
     app.add_handler(MessageHandler(filters.Text(["📊 Budget"]), cmd_budget))
 
