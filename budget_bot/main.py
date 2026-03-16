@@ -30,6 +30,24 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
 
+async def daily_reminder(app):
+    users = await db.get_users_without_expenses_today()
+    for user in users:
+        try:
+            await app.bot.send_message(
+                chat_id=user["telegram_id"],
+                text=(
+                    "📋 <b>Напоминание о тратах</b>\n\n"
+                    "Сегодня вы ещё не вносили трат. "
+                    "Не забудьте записать расходы командой /spend!"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+    logger.info("Daily reminder sent to %d users.", len(users))
+
+
 async def monthly_reset(app):
     groups = await db.get_all_groups()
     for group_id in groups:
@@ -80,6 +98,7 @@ def main():
     # Monthly reset scheduler — 1st of each month at 00:00
     scheduler = AsyncIOScheduler()
     scheduler.add_job(monthly_reset, trigger="cron", day=1, hour=0, minute=0, args=[app])
+    scheduler.add_job(daily_reminder, trigger="cron", hour=21, minute=0, args=[app])
 
     async def on_startup(application):
         await db.init_db()
