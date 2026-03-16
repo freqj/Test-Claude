@@ -416,3 +416,21 @@ async def get_all_groups() -> list[int]:
         cursor = await db.execute("SELECT id FROM groups")
         rows = await cursor.fetchall()
         return [r[0] for r in rows]
+
+
+async def get_users_without_expenses_today() -> list[dict]:
+    """Return all users who have a group but made no expenses today."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """SELECT u.*
+               FROM users u
+               WHERE u.group_id IS NOT NULL
+                 AND u.id NOT IN (
+                     SELECT DISTINCT e.user_id
+                     FROM expenses e
+                     WHERE DATE(e.created_at) = DATE('now')
+                 )"""
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
