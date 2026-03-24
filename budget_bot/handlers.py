@@ -756,9 +756,7 @@ async def spend_receive_cat_cb(update: Update, context: ContextTypes.DEFAULT_TYP
     if cat is None:
         await update.callback_query.message.reply_text("❗ Категория не найдена.")
         return ConversationHandler.END
-    context.user_data.setdefault("spend", {})["cat"] = cat
-    context.user_data["spend"]["group_id"] = group_id
-    context.user_data["spend"]["is_private"] = is_private
+    context.user_data["spend"] = {"cat": cat, "group_id": group_id, "is_private": is_private}
     await update.callback_query.message.reply_text(
         f"💰 Введите сумму для <b>{cat['name']}</b>:\n\n/cancel — отмена",
         parse_mode=ParseMode.HTML,
@@ -783,9 +781,7 @@ async def spend_receive_cat_text(update: Update, context: ContextTypes.DEFAULT_T
             f"❗ Категория «{name}» не найдена.\nДоступные: {names}\n\nПопробуйте снова:"
         )
         return SPEND_CAT
-    context.user_data.setdefault("spend", {})["cat"] = cat
-    context.user_data["spend"]["group_id"] = group_id
-    context.user_data["spend"]["is_private"] = is_private
+    context.user_data["spend"] = {"cat": cat, "group_id": group_id, "is_private": is_private}
     await update.message.reply_text(
         f"💰 Введите сумму для <b>{cat['name']}</b>:\n\n/cancel — отмена",
         parse_mode=ParseMode.HTML,
@@ -843,6 +839,15 @@ async def spend_receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 
+async def spend_photo_wrong_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📷 Пожалуйста, прикрепите фото чека или нажмите «Пропустить».\n\n"
+        "/cancel — отменить",
+        reply_markup=_skip_keyboard(),
+    )
+    return SPEND_PHOTO
+
+
 async def _finalize_spend(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -871,14 +876,16 @@ async def _finalize_spend(
     else:
         await effective_message.reply_text(msg, parse_mode=ParseMode.HTML, reply_markup=_group_keyboard())
 
-    # Notify others (skip for private categories)
+    # Notify others in background (skip for private categories)
     if not is_private:
         notify_msg = await _build_expense_message(
             who=_user_display(user.id, user.username),
             cat_name=cat["name"], amount=amount,
             spent=spent, budget=cat["monthly_budget"], description=description,
         )
-        await _notify_group(context, group_id, user.id, notify_msg, photo_file_id=photo_file_id)
+        context.application.create_task(
+            _notify_group(context, group_id, user.id, notify_msg, photo_file_id=photo_file_id)
+        )
 
 
 def build_spend_handler() -> ConversationHandler:
@@ -902,6 +909,7 @@ def build_spend_handler() -> ConversationHandler:
             SPEND_PHOTO: [
                 CallbackQueryHandler(spend_receive_photo_skip, pattern=r"^skip$"),
                 MessageHandler(filters.PHOTO, spend_receive_photo),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, spend_photo_wrong_input),
             ],
         },
         fallbacks=[CommandHandler("cancel", cmd_cancel)],
